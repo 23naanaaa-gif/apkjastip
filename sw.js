@@ -1,9 +1,4 @@
-// Service Worker JastipPro PWA — Network-First Auto-Update Strategy
-// Dengan strategi Network-First (cache: 'no-store'), setiap kali Anda mengubah/upload
-// coding index.html di GitHub, pengguna yang sudah menginstal PWA di HP akan langsung
-// mendapatkan versi terbaru secara otomatis saat membuka aplikasi (tanpa perlu hapus aplikasi).
-
-const CACHE_NAME = 'jastip-pro-pwa-v2';
+const CACHE_NAME = 'jastip-pro-pwa-v3';
 const ASSETS_TO_CACHE = [
   './',
   './index.html',
@@ -13,25 +8,17 @@ const ASSETS_TO_CACHE = [
   './icon.png'
 ];
 
+// 1. Install: Gunakan cache.addAll standar agar lolos verifikasi offline installability Chrome Android,
+// lalu panggil skipWaiting() setelah cache siap agar tidak mengganggu event beforeinstallprompt.
 self.addEventListener('install', (event) => {
-  self.skipWaiting();
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return Promise.all(
-        ASSETS_TO_CACHE.map((url) =>
-          fetch(url, { cache: 'no-store' })
-            .then((response) => {
-              if (response && response.ok) {
-                return cache.put(url, response);
-              }
-            })
-            .catch(() => {})
-        )
-      );
-    })
+    caches.open(CACHE_NAME)
+      .then((cache) => cache.addAll(ASSETS_TO_CACHE))
+      .then(() => self.skipWaiting())
   );
 });
 
+// 2. Activate: Bersihkan cache versi lama dan klaim client aktif
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((cacheNames) => {
@@ -46,22 +33,20 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+// 3. Message listener untuk trigger update instan dari aplikasi
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'SKIP_WAITING') {
     self.skipWaiting();
   }
-  if (event.data && event.data.type === 'CLEAR_AND_UPDATE') {
-    event.waitUntil(
-      caches.keys().then((names) => Promise.all(names.map((n) => caches.delete(n))))
-    );
-  }
 });
 
+// 4. Fetch: Strategi Network-First untuk dokumen HTML & aset lokal agar setiap ada update di GitHub
+// langsung terambil versi barunya, sekaligus selalu mengembalikan Response valid saat dicek offline oleh Chrome.
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
 
-  // Jangan intercept request API Firebase Auth / Firestore
+  // Jangan intercept koneksi real-time Firebase Auth & Cloud Firestore
   if (
     url.origin.includes('firestore.googleapis.com') ||
     url.origin.includes('identitytoolkit.googleapis.com') ||
@@ -70,12 +55,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Untuk file aplikasi (HTML, manifest, icon di origin yang sama):
-  // Gunakan NETWORK-FIRST dengan { cache: 'no-store' } agar selalu mengambil versi terbaru dari GitHub Pages.
-  // Jika HP sedang tidak ada sinyal/offline, baru fallback ke Cache terakhir.
-  if (url.origin === self.location.origin) {
+  // Untuk navigasi halaman (index.html) & file di dalam GitHub Pages yang sama:
+  // Utamakan jaringan terbaru (Network-First), simpan ke cache, dan fallback ke cache jika offline.
+  if (event.request.mode === 'navigate' || url.origin === self.location.origin) {
     event.respondWith(
-      fetch(event.request, { cache: 'no-store' })
+      fetch(event.request)
         .then((networkResponse) => {
           if (networkResponse && networkResponse.status === 200) {
             const responseClone = networkResponse.clone();
@@ -88,27 +72,17 @@ self.addEventListener('fetch', (event) => {
         .catch(() => {
           return caches.match(event.request).then((cachedResponse) => {
             if (cachedResponse) return cachedResponse;
-            if (event.request.mode === 'navigate') {
-              return caches.match('./index.html');
-            }
+            return caches.match('./index.html');
           });
         })
     );
     return;
   }
 
-  // Untuk resource CDN eksternal (Tailwind, Fonts, Firebase SDK): Network-First dengan fallback cache
+  // Untuk resource eksternal (CDN): Cache-First dengan fallback jaringan
   event.respondWith(
-    fetch(event.request)
-      .then((networkResponse) => {
-        if (networkResponse && networkResponse.status === 200) {
-          const responseClone = networkResponse.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(event.request, responseClone);
-          });
-        }
-        return networkResponse;
-      })
-      .catch(() => caches.match(event.request))
+    caches.match(event.request).then((cachedResponse) => {
+      return cachedResponse || fetch(event.request);
+    })
   );
 });
